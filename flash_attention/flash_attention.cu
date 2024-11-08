@@ -478,7 +478,8 @@ __global__ void backward1_kernel(const float *Q, const float *K, const float *V,
   }
 }
 
-torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
+torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
+                      int version) {
 
   const int B = Q.size(0);                   // batch size
   const int nh = Q.size(1);                  // number of heads
@@ -505,18 +506,37 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
   dim3 grid_dim(B, nh);     // batch size * number of heads
   dim3 block_dim(TILE_DIM); // Batch threads per tile
 
-  forward1_kernel(Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),
-                  T, C, Tc, Tr, TILE_DIM, TILE_DIM, softmax_scale,
-                  l.data_ptr<float>(), m.data_ptr<float>(),
-                  O.data_ptr<float>());
-  )
+  switch (version) {
+  case 1:
+    forward1_kernel(Q.data_ptr<float>(), K.data_ptr<float>(),
+                    V.data_ptr<float>(), T, C, Tc, Tr, TILE_DIM, TILE_DIM,
+                    softmax_scale, l.data_ptr<float>(), m.data_ptr<float>(),
+                    O.data_ptr<float>());
+      );
+      break;
+
+  case 2:
+    forward2_kernel(Q.data_ptr<float>(), K.data_ptr<float>(),
+                    V.data_ptr<float>(), T, C, Tc, Tr, TILE_DIM, TILE_DIM,
+                    softmax_scale, l.data_ptr<float>(), m.data_ptr<float>(),
+                    O.data_ptr<float>());
+      );
+      break;
+  default:
+    printf("Using default flash attention version (v2)");
+    forward2_kernel(Q.data_ptr<float>(), K.data_ptr<float>(),
+                    V.data_ptr<float>(), T, C, Tc, Tr, TILE_DIM, TILE_DIM,
+                    softmax_scale, l.data_ptr<float>(), m.data_ptr<float>(),
+                    O.data_ptr<float>());
+      );
+  }
   return O;
 }
 
 std::vector<torch::Tensor> backward(torch::Tensor Q, torch::Tensor K,
                                     torch::Tensor V, torch::Tensor O,
                                     torch::Tensor dO, torch::Tensor l,
-                                    torch::Tensor m, ) {
+                                    torch::Tensor m, int version) {
 
   const int B = Q.size(0);                   // batch size
   const int nh = Q.size(1);                  // number of heads
@@ -545,11 +565,33 @@ std::vector<torch::Tensor> backward(torch::Tensor Q, torch::Tensor K,
   dim3 grid_dim(B, nh);     // batch size * number of heads
   dim3 block_dim(TILE_DIM); // Batch threads per tile
 
-  backward1_kernel<<<grid_dim, block_dim, sram_size>>>(
-      Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),
-      O.data_ptr<float>(), dO.data_ptr<float>(), l.data_ptr<float>(),
-      m.data_ptr<float>(), T, C, Tc, Tr, TILE_DIM, TILE_DIM, softmax_scale,
-      dQ.data_ptr<float>(), dK.data_ptr<float>(), dV.data_ptr<float>(), );
-  )
-      return {dQ, dK, dV};
+  switch (version) {
+  case 1:
+
+    backward1_kernel<<<grid_dim, block_dim, sram_size>>>(
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),
+        O.data_ptr<float>(), dO.data_ptr<float>(), l.data_ptr<float>(),
+        m.data_ptr<float>(), T, C, Tc, Tr, TILE_DIM, TILE_DIM, softmax_scale,
+        dQ.data_ptr<float>(), dK.data_ptr<float>(), dV.data_ptr<float>(), );
+  );
+  break;
+
+  case 2:
+    backward2_kernel<<<grid_dim, block_dim, sram_size>>>(
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), T, C, Tc,
+        Tr, TILE_DIM, TILE_DIM, softmax_scale, l.data_ptr<float>(),
+        m.data_ptr<float>(), O.data_ptr<float>());
+      );
+      break;
+  default:
+    printf("Using default flash attention version - backward (v1)");
+
+    backward1_kernel<<<grid_dim, block_dim, sram_size>>>(
+        Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(), T, C, Tc,
+        Tr, TILE_DIM, TILE_DIM, softmax_scale, l.data_ptr<float>(),
+        m.data_ptr<float>(), O.data_ptr<float>());
+      );
+      break;
+  }
+  return {dQ, dK, dV};
 }
